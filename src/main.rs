@@ -1,11 +1,11 @@
-use std::fs::File;
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::error::Error;
 use std::io::{self, prelude::*, BufReader};
 use std::collections::HashSet;
 use std::collections::HashMap;
 use indicatif::{ProgressBar, ProgressStyle};
-use csv::ReaderBuilder;
+use indicatif::ParallelProgressIterator;
+use rayon::iter::{ParallelIterator, IntoParallelRefIterator};
 
 type Word = [u8; 5];
 
@@ -17,7 +17,7 @@ struct Constraints {
     excluded: HashSet<u8>
 }
 
-fn load_words() -> Result<Vec<Word>, Box<dyn Error>> {
+fn read_words() -> Result<Vec<Word>, Box<dyn Error>> {
     let mut word_vec = Vec::new();
 
     let file = File::open("words-5.txt")?;
@@ -92,63 +92,48 @@ fn check_constraints(word: &Word, constraints: &Constraints) -> bool {
     true
 }
 
-
-fn init_output_file(filename: &str, words: &Vec<Word>) -> Result<(usize, File), Box<dyn Error>> {
-    let file = OpenOptions::new()
-        .create(true)
-        .read(true)
-        .append(true)
-        .open(filename)?;
-
-    let mut reader = ReaderBuilder::new()
-        .has_headers(false)
-        .from_reader(&file);
-
-    let mut i = 0;
-    for (word, record_result) in words.iter().zip(reader.records()) {
-        let record = record_result?;
-        let file_word: Word = record.get(1).ok_or("no wordle-word")?.as_bytes().try_into().expect("word to fit into 5 bytes");
-        assert_eq!(word, &file_word, "input- and output-file not compatible");
-        i += 1;
-    }
-
-    Ok((i, file))
-}
-
 fn main() -> io::Result<()> {
-    let words = load_words().unwrap();
-    let (start, mut output_file) = init_output_file("words-5-output.txt", &words).unwrap();
+    let words = read_words().unwrap();
 
-    println!("Starting at i={}", start);
-
-    let mut scores = vec!(0.; words.len());
-
-    let pb = ProgressBar::new(words.len() as u64);
-    pb.set_style(ProgressStyle::default_bar()
+    let pb = ProgressBar::new(words.len() as u64)
+        .with_style(ProgressStyle::default_bar()
         .template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos}/{len} ({eta_precise})")
         .progress_chars("#>-"));
-    pb.set_position(start as u64);
 
-    for i in start..words.len() {
-        for j in 0..words.len() {
-            let guess = words[i];
-            let actual = words[j];
-            let constraints = make_constraints(&guess, &actual);
-
-            for k in 0..words.len() {
-                if check_constraints(&words[k], &constraints) {
-                    scores[i] += 1.
+    let scores: Vec<f32> = words.par_iter().progress_with(pb)
+        .map(|guess| {
+            let mut score = 0.;
+            for actual in words.iter() {
+                let constraints = make_constraints(&guess, &actual);
+                for test_word in words.iter() {
+                    if check_constraints(&test_word, &constraints) {
+                        score += 1.
+                    }
                 }
             }
-        }
-        scores[i] /= words.len() as f32;
-        let word_string = String::from_utf8(words[i].to_vec()).unwrap();
-        let line = format!("{},{}", scores[i], word_string);
-        writeln!(output_file, "{}", line)?;
-        pb.inc(1);
-    }
+            score / words.len() as f32
+        })
+        .collect();
 
-    pb.finish();
+    let mut scores_and_words: Vec<(&f32, &Word)> = scores.iter().zip(words.iter())
+        .collect::<Vec<(&f32, &Word)>>();
+    scores_and_words.sort_by(|(a, _), (b, _)| a.partial_cmp(b).unwrap());
+
+    let content: String = scores_and_words.iter()
+        .map(|(score, word_bytes)| {
+            let word_string = String::from_utf8(word_bytes.to_vec()).unwrap();
+            format!("{},{}", score, word_string)
+        })
+        .collect::<Vec<String>>()
+        .join("\n");
+
+    let mut file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .open("words-5-output.txt")?;
+
+    write!(file, "{}", content)?;
     println!("Done!");
+
     Ok(())
 }
