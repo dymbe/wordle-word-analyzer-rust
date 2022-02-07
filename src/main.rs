@@ -20,7 +20,7 @@ struct Constraints {
 fn read_words() -> Result<Vec<Word>, Box<dyn Error>> {
     let mut word_vec = Vec::new();
 
-    let file = File::open("words-5.txt")?;
+    let file = File::open("words.txt")?;
     let reader = BufReader::new(file);
 
     for line in reader.lines() {
@@ -130,7 +130,7 @@ fn main() -> io::Result<()> {
     let mut file = OpenOptions::new()
         .create(true)
         .write(true)
-        .open("words-5-output.txt")?;
+        .open("results.csv")?;
 
     write!(file, "{}", content)?;
     println!("Done!");
